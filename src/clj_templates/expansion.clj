@@ -182,5 +182,11 @@
         var-bindings (map-indexed (fn [idx d] (assoc d :first? (zero? idx))) defined)]
     (mapcat (fn [vb] (expand-var vb op-spec)) var-bindings)))
 
+(defmethod expand :expression-error [_bindings {:keys [codepoints]}]
+  codepoints)
+
+(defmethod expand :top-level-error [_bindings {:keys [codepoints]}]
+  codepoints)
+
 (defn expand-template [parsed-template bindings]
   (mapcat (fn [c] (expand bindings c)) parsed-template))
