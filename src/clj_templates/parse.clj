@@ -29,15 +29,6 @@
         (lex/set-position! lex pos)
         nil))))
 
-(defn- pred [p name]
-  (reify Parser
-    (can-start? [_this lex] (lex/match-p? lex p))
-    (parse [_this l]
-      (let [c (lex/peek l)]
-        (if (p c)
-          [(lex/advance l)]
-          (parse-error (str "Failed to match " name)))))))
-
 (defn- str-enum [s]  
   (char-p (set (util/string->codepoints s))))
 
@@ -180,17 +171,6 @@
          :modifier modifier}))))
 
 (def variable-list (list-of \, varspec))
-
-#_(def expression
-  (reify Parser
-    (can-start? [_this lexbuf] (lex/match? lexbuf \{))
-    (parse [_this l]
-      (lex/consume l \{)
-      (let [op (parse (optional operator) l)
-            specs (parse variable-list l)]
-        (lex/consume l \})
-        {:type :expression
-         :expression {:op op :varspecs specs}}))))
 
 (def inner-expression
   (reify Parser
