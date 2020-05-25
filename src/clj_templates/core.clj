@@ -11,8 +11,10 @@
   (to-value [this]))
 
 (def into-string {:to-value str})
+(def into-identity {:to-value identity})
 (extend Named IntoValue {:to-value name})
-(extend String IntoValue {:to-value identity})
+(extend String IntoValue into-identity)
+(extend nil IntoValue into-identity)
 (extend Number IntoValue into-string)
 (extend Boolean IntoValue into-string)
 (extend Character IntoValue into-string)

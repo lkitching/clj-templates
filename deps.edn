@@ -1,2 +1,3 @@
 {:aliases
- {:test {:extra-deps {lambdaisland/kaocha {:mvn/version "1.0.632"}}}}}
+ {:test {:extra-deps {lambdaisland/kaocha {:mvn/version "1.0.632"}
+                      org.clojure/data.json {:mvn/version "1.0.0"}}}}}
