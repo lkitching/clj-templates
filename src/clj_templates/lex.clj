@@ -1,5 +1,6 @@
 (ns clj-templates.lex
   (:require [clj-templates.util :as util])
+  (:refer-clojure :exclude [peek])
   (:import [java.util Arrays]))
 
 (defn create [^ints a]
