@@ -2,12 +2,12 @@
   (:require [clj-templates.util :as util])
   (:import [java.util Arrays]))
 
-(defn create [a]
+(defn create [^ints a]
   {:current (atom 0)
    :end (alength a)
    :arr a})
 
-(defn from-string [s]
+(defn from-string [^ints s]
   (create (util/string->codepoints s)))
 
 (defn create-child [lex start end]
@@ -15,7 +15,7 @@
    :end end
    :arr (:arr lex)})
 
-(defn codepoints-between [{:keys [arr] :as lex} from to]
+(defn codepoints-between [{:keys [^ints arr] :as lex} ^long from ^long to]
   (Arrays/copyOfRange arr from to))
 
 (defn codepoints-from [{:keys [end] :as lex} position]
@@ -33,10 +33,10 @@
   (>= @current end))
 
 (defn peek
-  ([{:keys [arr current] :as lex}]
+  ([{:keys [^ints arr current] :as lex}]
    (if (not (end? lex))
      (aget arr @current)))
-  ([{:keys [arr current] :as lex} offset]
+  ([{:keys [^ints arr current] :as lex} offset]
    (let [p (+ offset @current)]
      (if (<= p (alength arr))
        (aget arr p)))))

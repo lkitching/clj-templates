@@ -10,7 +10,7 @@
   Integer
   (to-codepoint [i] i))
 
-(defn codepoint->string [cp]
+(defn ^String codepoint->string [cp]
   (String. (int-array 1 [cp]) 0 1))
 
 (defn codepoint->utf8
@@ -18,13 +18,13 @@
   [cp]
   (.getBytes (codepoint->string cp)))
 
-(defn string->codepoints [s]
+(defn string->codepoints [^String s]
   (.. s (codePoints) (toArray)))
 
 (defn codepoints->string
   "Converts a sequences of codepoints to a string"
   [codepoints]
-  (let [arr (int-array codepoints)        
+  (let [arr (int-array codepoints)
         offset 0
         count (alength arr)]
     (String. arr offset count)))
