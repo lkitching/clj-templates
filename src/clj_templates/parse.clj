@@ -159,7 +159,9 @@
       (let [following (one-of (str-enum ".") varchar)
             f (parse varchar lexbuf)
             r (parse (star following) lexbuf)]
-        (util/codepoints->string (cons f r))))))
+        ;;TODO: hack! pct-encoded returns a sequence while other parsers
+        ;;return single codepoints
+        (util/codepoints->string (flatten (cons f r)))))))
 
 (def varspec
   (reify Parser
@@ -224,7 +226,9 @@
 
 (def literals-segment (fmap (fn [codepoints]
                               {:type :literals
-                               :codepoints codepoints})
+                               ;;TODO: hack! pct-encoded returns a sequence while
+                               ;;other parsers return single codepoints
+                               :codepoints (flatten codepoints)})
                             (star literals)))
 
 (defn- consume-remaining [l]
