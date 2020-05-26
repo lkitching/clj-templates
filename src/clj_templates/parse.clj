@@ -120,7 +120,11 @@
 (defn- make-operator [op-codepoint]
   (keyword (util/codepoints->string [op-codepoint])))
 
-(def operator (fmap make-operator (str-enum "+#./;?&=,!@|")))
+;;NOTE: The =,!@| operators are allowed by the grammar but are not
+;;implemented. Excluding them from the grammar here means we don't
+;;need to filter them in the expansion phase. This could make error
+;;messages less helpful!
+(def operator (fmap make-operator (str-enum "+#./;?&")))
 
 (defn list-of [sep p]
   (reify Parser
