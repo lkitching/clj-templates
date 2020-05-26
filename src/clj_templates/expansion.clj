@@ -172,12 +172,22 @@
     (concat (util/string->codepoints first-str)
             value-str)))
 
+;;TODO: normalise variables by removing undefined sub-elements from lists/maps?
+;;expansion process for compound variables has to scan for undefined values
+(defn ^{:section "2.3"} variable-defined? [v]
+  (cond (nil? v) false
+        (string? v) true
+        ;;TODO: are lists containing only undefined values undefined?
+        (sequential? v) (boolean (seq v)) ;;undefined if zero members
+        :else (boolean (some defined-pair? v)))) ;;undefined if all values are undefined
+
 (defmethod expand :expression [bindings {:keys [expression]}]
   (let [{:keys [op varspecs]} expression
         op-spec (get operators op)
         defined (keep (fn [varspec]
-                        (if-let [value (get bindings (:name varspec))]
-                          {:value value :varspec varspec}))
+                        (let [value (get bindings (:name varspec))]
+                          (if (variable-defined? value)
+                            {:value value :varspec varspec})))
                       varspecs)
         var-bindings (map-indexed (fn [idx d] (assoc d :first? (zero? idx))) defined)]
     (mapcat (fn [vb] (expand-var vb op-spec)) var-bindings)))
