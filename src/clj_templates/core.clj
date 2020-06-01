@@ -30,10 +30,45 @@
                   [(name k) (format-value v)])
                 bindings)))
 
-(defn- template-valid? [template]
+(defn- parsed-ok? [template]
   (every? (fn [section]
             (contains? #{:expression :literals} (:type section)))
           template))
+
+(defn- composite?
+  "Whether the given value is composite i.e. can contain multiple
+  values"
+  [x]
+  (or (sequential? x) (map? x)))
+
+(defn- varspec-binding [varspec bindings]
+  (get bindings (:name varspec)))
+
+(defn- has-prefix? [varspec]
+  (= :prefix (get-in varspec [:modifier :type])))
+
+(defn- varspecs [template]
+  (mapcat (fn [section] (get-in section [:expression :varspecs])) template))
+
+(defn- ^{:section "2.4.1"} binding-ok? [varspec binding]
+  ;;From spec: Prefix modifiers are not applicable to variables that
+  ;;have composite values
+  (if (has-prefix? varspec)
+    (not (composite? binding))
+    true))
+
+(defn- types-ok?
+  "Checks whether the varspecs within a template are all bound to valid
+  values in the bindings map."
+  [template bindings]
+  (every? (fn [varspec]
+            (binding-ok? varspec (varspec-binding varspec bindings)))
+          (varspecs template)))
+
+(defn- template-valid? [template bindings]
+  (and
+   (parsed-ok? template)
+   (types-ok? template bindings)))
 
 (defn expand
   "Expands a URI template string with the a map of bindings"
@@ -43,6 +78,6 @@
         t (parse/parse parse/uri-template lexbuf)
         cps (ex/expand-template t bindings)
         result (util/codepoints->string cps)]
-    (if (template-valid? t)
+    (if (template-valid? t bindings)
       result
       (throw (ex-info "Invalid URI template" {:expansion result})))))
