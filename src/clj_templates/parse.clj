@@ -1,178 +1,218 @@
 (ns clj-templates.parse
   (:require [clj-templates.lex :as lex]
             [clj-templates.util :as util])
-  (:import [java.util ArrayList]))
+  (:import [java.util ArrayList]
+           [clojure.lang IFn]))
 
 (defprotocol Parser
-  (can-start? [this lex])
+  "An item that should consume some prefix of the input and return a
+  value representing the consumed input."
   (parse [this lex]))
+
+(defprotocol Matcher
+  "An item that can match and therefore advance the current position of
+  a lex buffer without consuming (i.e. without advancing the current
+  start position)."
+  (try-match [this lex]
+    "Attempt to match the current position of a lex buffer. If
+    successful, returns true and advances the current
+    position. Returns false if the match fails and in this case the
+    state of the buffer should not be modified."))
+
+(extend-protocol Matcher
+  Character
+  (try-match [c lexbuf]
+    (lex/try-match lexbuf c))
+
+  IFn
+  (try-match [p lexbuf]
+    (lex/try-match-p lexbuf p)))
 
 (defn- parse-error [msg]
   (throw (ex-info msg {:type :parse})))
 
-(defn- fmap [f p]
-  (reify Parser
-    (can-start? [_this c] (can-start? p c))
-    (parse [_this lex]
-      (f (parse p lex)))))
-
-(defn- char-p [p]
-  (reify Parser
-    (can-start? [_this lex] (lex/match-p? lex p))
-    (parse [_this lex] (lex/consume-p lex p ""))))
-
 (defn try-parse [p lex]
-  (let [pos (lex/position lex)]
-    (try
-      (parse p lex)
-      (catch Exception ex
-        (lex/set-position! lex pos)
-        nil))))
+  (try
+    (parse p lex)
+    (catch Exception ex
+      nil)))
 
-(defn- str-enum [s]  
-  (char-p (set (util/string->codepoints s))))
+(defn- chars-p
+  "Returns a predicate that returns true if the input codepoint matches
+  any of the codepoints in the string s."
+  [s]
+  (let [cps (set (util/string->codepoints s))]
+    (comp boolean cps)))
 
-(defn one-of [& ps]
-  (reify Parser
-    (can-start? [_this lex] (boolean (some #(can-start? % lex) ps)))
-    (parse [_this lex]
-      (if-let [p (some (fn [p] (when (can-start? p lex) p)) ps)]
-        (parse p lex)
-        (parse-error "No matching parser found")))))
+(defn one-of
+  "Constructs a matcher which attempts to match with each of the input
+  matchers. Returns true on the first successful match."
+  [& ms]
+  (reify Matcher
+    (try-match [_this lexbuf]
+      (boolean (some #(try-match % lexbuf) ms)))))
 
-(def alpha (char-p (fn [c]
-                     (or (<= 0x41 c 0x5A)
-                         (<= 0x61 c 0x7A)))))
+(defn star
+  "Returns a matcher which tries to match the input matcher repeatedly
+  until it fails. The returned matcher always succeeds."
+  [m]
+  (reify Matcher
+    (try-match [_this lexbuf]
+      (loop []
+        (when (try-match m lexbuf)
+          (recur)))
+      true)))
 
-(def digit (char-p (fn [c] (<= 0x30 c 0x39))))
-(def hexdig (one-of digit (str-enum "abcdefABCDEF")))
+(defn sequential
+  "Returns a matcher which attempts to match the input with each input
+  matcher in turn. Succeeds if each input matcher succeeds."
+  [m & ms]
+  (reify Matcher
+    (try-match [_this lexbuf]
+      (if (lex/end? lexbuf)
+        false
+        (let [p (lex/position lexbuf)]
+          (loop [ms (cons m ms)]
+            (if-let [m (first ms)]
+              (if (try-match m lexbuf)
+                (recur (rest ms))
+                (do
+                  (lex/set-position! lexbuf p)
+                  false))
+              true)))))))
 
-(defn sequential [p & ps]
-  (reify Parser
-    (can-start? [_this c] (can-start? p c))
-    (parse [_this lexbuf]
-      (reduce (fn [acc p] (conj acc (parse p lexbuf)))
-              []
-              (cons p ps)))))
+(defn plus
+  "Returns a matcher that attempts to match the input matcher one or
+  more times."
+  [m]
+  (sequential m (star m)))
 
-(defn star [p]
-  (reify Parser
-    (can-start? [_this lexbuf] (can-start? p lexbuf))
-    (parse [_this lexbuf]
-      (loop [acc []]
-        (if (can-start? p lexbuf)
-          (recur (conj acc (parse p lexbuf)))
-          acc)))))
+(defn- up-to
+  "Retuns a matcher which attempts to match the input matcher between 0
+  and n times."
+  [n m]
+  (reify Matcher
+    (try-match [_this lexbuf]
+      (loop [i n]
+        (if (and (pos? i) (try-match m lexbuf))
+          (recur (dec i))))
+      true)))
 
-(def pct-encoded (sequential (str-enum "%") hexdig hexdig))
-(def unreserved (one-of alpha digit (str-enum "-._~")))
-(def gen-delims (str-enum ":/?#[]@"))
-(def sub-delims (str-enum "!$&'()*+,;="))
+(defn alpha [c]
+  (or (<= 0x41 c 0x5A)
+      (<= 0x61 c 0x7A)))
+
+(defn digit [c] (<= 0x30 c 0x39))
+(def hexdig (one-of digit (chars-p "abcdefABCDEF")))
+
+(def pct-encoded (sequential \% hexdig hexdig))
+(def unreserved (one-of alpha digit (chars-p "-._~")))
+(def gen-delims (chars-p ":/?#[]@"))
+(def sub-delims (chars-p "!$&'()*+,;="))
+
 (def reserved (one-of gen-delims sub-delims))
 
-(def ucschar (char-p (fn [c]
-                       (or (<= 0xA0 c 0xD7FF)
-                           (<= 0xF900 c 0xFDCF)
-                           (<= 0xFDF0 c 0xFFEF)
-                           (<= 0x10000 c 0x1FFFD)
-                           (<= 0x20000 c 0x2FFFD)
-                           (<= 0x30000 c 0x3FFFD)
-                           (<= 0x40000 c 0x4FFFD)
-                           (<= 0x50000 c 0x5FFFD)
-                           (<= 0x60000 c 0x6FFFD)
-                           (<= 0x70000 c 0x7FFFD)
-                           (<= 0x80000 c 0x8FFFD)
-                           (<= 0x90000 c 0x9FFFD)
-                           (<= 0xA0000 c 0xAFFFD)
-                           (<= 0xB0000 c 0xBFFFD)
-                           (<= 0xC0000 c 0xCFFFD)
-                           (<= 0xD0000 c 0xDFFFD)
-                           (<= 0xE1000 c 0xEFFFD)))))
+(defn ucschar [c]
+  (or (<= 0xA0 c 0xD7FF)
+      (<= 0xF900 c 0xFDCF)
+      (<= 0xFDF0 c 0xFFEF)
+      (<= 0x10000 c 0x1FFFD)
+      (<= 0x20000 c 0x2FFFD)
+      (<= 0x30000 c 0x3FFFD)
+      (<= 0x40000 c 0x4FFFD)
+      (<= 0x50000 c 0x5FFFD)
+      (<= 0x60000 c 0x6FFFD)
+      (<= 0x70000 c 0x7FFFD)
+      (<= 0x80000 c 0x8FFFD)
+      (<= 0x90000 c 0x9FFFD)
+      (<= 0xA0000 c 0xAFFFD)
+      (<= 0xB0000 c 0xBFFFD)
+      (<= 0xC0000 c 0xCFFFD)
+      (<= 0xD0000 c 0xDFFFD)
+      (<= 0xE1000 c 0xEFFFD)))
 
-(def iprivate (char-p (fn [c]
-                        (or (<= 0xE000 c 0xF8FF)
-                            (<= 0xF0000 c 0xFFFFD)
-                            (<= 0x100000 c 0x10FFFD)))))
+(defn iprivate [c]
+  (or (<= 0xE000 c 0xF8FF)
+      (<= 0xF0000 c 0xFFFFD)
+      (<= 0x100000 c 0x10FFFD)))
 
 (def literals (one-of
-               (char-p (fn [c]
-                         (or (= 0x21 c)
-                             (<= 0x23 c 0x24)
-                             (= 0x26 c)
-                             (<= 0x28 c 0x3B)
-                             (= 0x3D c)
-                             (<= 0x3F c 0x5B)
-                             (= 0x5D c)
-                             (= 0x5F c)
-                             (<= 0x61 c 0x7A)
-                             (= 0x7E c))))
+               (fn [c]
+                 (or (= 0x21 c)
+                     (<= 0x23 c 0x24)
+                     (= 0x26 c)
+                     (<= 0x28 c 0x3B)
+                     (= 0x3D c)
+                     (<= 0x3F c 0x5B)
+                     (= 0x5D c)
+                     (= 0x5F c)
+                     (<= 0x61 c 0x7A)
+                     (= 0x7E c)))
                ucschar
                iprivate
                pct-encoded))
 
-(defn optional [p]
-  (reify Parser
-    (can-start? [_this lexbuf] (can-start? p lexbuf))
-    (parse [this lexbuf]
-      (if (can-start? this lexbuf)
-        (parse p lexbuf)))))
-
-(defn- make-operator [op-codepoint]
-  (keyword (util/codepoints->string [op-codepoint])))
+(defn- codepoint->keyword [cp]
+  (keyword (util/codepoints->string [cp])))
 
 ;;NOTE: The =,!@| operators are allowed by the grammar but are not
 ;;implemented. Excluding them from the grammar here means we don't
 ;;need to filter them in the expansion phase. This could make error
 ;;messages less helpful!
-(def operator (fmap make-operator (str-enum "+#./;?&")))
+(def operator? (chars-p "+#./;?&"))
 
-(defn list-of [sep p]
-  (reify Parser
-    (can-start? [_this lexbuf] (can-start? p lexbuf))
+(defn list-of
+  "Creates a parser which matches a non-empty list of values parsed by
+  the parser p separated by sep. Returns a sequence of the parsed
+  values."
+  [sep p]
+  (reify Parser    
     (parse [_this lexbuf]
-      (loop [acc [(parse p lexbuf)]]
-        (if (lex/match? lexbuf sep)
+      (loop [acc [(parse p lexbuf)]]        
+        (if (lex/try-consume lexbuf sep)
           (recur (conj acc (parse p lexbuf)))
           acc)))))
 
-(def explode (fmap (constantly {:type :explode}) (str-enum "*")))
+(defn- to-digit [c] (- c 0x30))
 
-(def prefix
+(defn- parse-prefix-length [lexbuf]
+  (if (try-match (sequential (fn [c] (<= 0x31 c 0x39)) (up-to 3 digit)) lexbuf)
+    (reduce (fn [acc cp]
+              (+ (* 10 acc) (to-digit cp)))
+            0
+            (lex/consume-all lexbuf))
+    (parse-error "Expected prefix length")))
+
+(def modifier? (chars-p ":*"))
+
+;;TODO: Decide if 'nil' is a valid modifier or not!  other parsers
+;;definitely consume some of the input so the optional combinator was
+;;needed to wrap them if they did not. This one just returns nil if
+;;there's no modifier at the start. If parsers just become functions
+;;this might be ok?
+(def modifier-level4
   (reify Parser
-    (can-start? [_this lexbuf] (lex/matches? lexbuf \:))
-    (parse [_this lexbuf]
-      (lex/consume lexbuf \:)
-      (let [to-digit (fn [c] (- c 0x30))
-            d (lex/consume-p lexbuf (fn [c] (<= 0x31 c 0x39)) "Digit between 1 and 9")
-            max-length (loop [i 3
-                              len (to-digit d)]
-                         (if (and (pos? i) (can-start? digit lexbuf))
-                           (let [d (to-digit (lex/advance lexbuf))]
-                             (recur (dec i) (+ (* 10 len) d)))
-                           len))]
-        {:type :prefix
-         :max-length max-length}))))
+    (parse [_this lexbuf]      
+      (let [op-cp (lex/try-consume-p lexbuf modifier?)]
+        (when op-cp          
+          (case (char op-cp)
+            \* {:type :explode}
+            \: {:type :prefix :max-length (parse-prefix-length lexbuf)}))))))
 
-(def modifier-level4 (one-of prefix explode))
+(def varchar (one-of alpha digit \_ pct-encoded))
 
-(def varchar (one-of alpha digit (str-enum "_") pct-encoded))
 (def varname
-  (reify Parser
-    (can-start? [_this lexbuf] (can-start? varchar lexbuf))
-    (parse [_this lexbuf]
-      (let [following (one-of (str-enum ".") varchar)
-            f (parse varchar lexbuf)
-            r (parse (star following) lexbuf)]
-        ;;TODO: hack! pct-encoded returns a sequence while other parsers
-        ;;return single codepoints
-        (util/codepoints->string (flatten (cons f r)))))))
+  (reify Parser    
+    (parse [_this lexbuf]      
+      (if (try-match (sequential varchar (star (one-of \. varchar))) lexbuf)
+        (util/codepoints->string (lex/consume-all lexbuf))
+        (parse-error "Expected varchar")))))
 
 (def varspec
-  (reify Parser
-    (can-start? [_this lexbuf] (can-start? varname lexbuf))
+  (reify Parser    
     (parse [_this lexbuf]
       (let [vn (parse varname lexbuf)
-            modifier (parse (optional modifier-level4) lexbuf)]
+            modifier (parse modifier-level4 lexbuf)]
         {:name vn
          :modifier modifier}))))
 
@@ -180,77 +220,71 @@
 
 (def inner-expression
   (reify Parser
-    (can-start? [_this lexbuf] (or (can-start? operator lexbuf)
-                                   (can-start? varspec lexbuf)))
     (parse [_this lexbuf]
-      (let [op (parse (optional operator) lexbuf)
+      (let [op-cp (lex/try-consume-p lexbuf operator?)            
+            op (if op-cp (codepoint->keyword op-cp))
             specs (parse variable-list lexbuf)]
         {:type :expression
          :expression {:op op :varspecs specs}}))))
 
-(defn- scan-for [lexbuf c]
-  (let [search-cp (util/to-codepoint c)]
-    (loop []
-      (if (lex/end? lexbuf)
-        false
-        (let [cp (lex/advance lexbuf)]
-          (if (= cp search-cp)
-            true
-            (recur)))))))
+(defn- scan-for
+  "Consumes the remaining input up to and including the next instance of
+  the given search character. Returns a sequence of the consumed
+  codepoints."
+  [lexbuf c]
+  (let [search-cp (util/to-codepoint c)
+        p (fn [cp] (not= search-cp cp))]
+    ;;skip other characters
+    (try-match (star p) lexbuf)
+    (let [found (try-match c lexbuf)]
+      ;;TODO: used match region for rest of parse?
+      {:found found :codepoints (lex/consume-all lexbuf)})))
 
 (def expression
   (reify Parser
-    (can-start? [_this lexbuf] (lex/matches? lexbuf \{))
     (parse [_this lexbuf]
-      (let [start-pos (lex/position lexbuf)]
-        (lex/consume lexbuf \{)
-        ;;find closing \}
-        (if (scan-for lexbuf \})
+      (let [start-pos (lex/position lexbuf)
+            bracket-cp (lex/consume lexbuf \{)
+            ;;find closing \}
+            {:keys [found codepoints]} (scan-for lexbuf \})
+            matched-cps (cons bracket-cp codepoints)]
+        (if found
           (if (= 2 (- (lex/position lexbuf) start-pos))
             {:type :expression-error
              :reason :empty
-             :codepoints (util/string->codepoints "{}")}
-            (let [child-buf (lex/create-child lexbuf (inc start-pos) (dec (lex/position lexbuf)))
+             :codepoints matched-cps}
+            (let [child-buf (lex/create codepoints 0 (dec (alength codepoints)))
                   expr (try-parse inner-expression child-buf)]
               (cond
                 (nil? expr)
                 {:type :expression-error
-                 :codepoints (lex/codepoints-between lexbuf start-pos (lex/position lexbuf))}
+                 :codepoints matched-cps
+                 :reason :invalid-expression}
                 
                 (lex/end? child-buf)
                 expr
 
                 :else
                 {:type :expression-error
-                 :codepoints (lex/codepoints-between lexbuf start-pos (lex/position lexbuf))
+                 :codepoints matched-cps
                  :reason :invalid-expression})))
           {:type :expression-error
            :reason :unterminated
-           :codepoints (lex/codepoints-from lexbuf start-pos)})))))
-
-(def literals-segment (fmap (fn [codepoints]
-                              {:type :literals
-                               ;;TODO: hack! pct-encoded returns a sequence while
-                               ;;other parsers return single codepoints
-                               :codepoints (flatten codepoints)})
-                            (star literals)))
-
-(defn- consume-remaining [l]
-  (loop [acc []]
-    (if (lex/end? l)
-      acc
-      (recur (conj acc (lex/advance l))))))
+           :codepoints matched-cps})))))
 
 (def uri-template
-  (reify Parser
-    (can-start? [_this cp] (or (can-start? expression cp)
-                               (can-start? literals cp)))
+  (reify Parser    
     (parse [_this lexbuf]
       (loop [acc []]
         (cond
           (lex/end? lexbuf) acc
-          (can-start? expression lexbuf) (recur (conj acc (parse expression lexbuf)))
-          (can-start? literals-segment lexbuf) (recur (conj acc (parse literals-segment lexbuf)))
-          :else (let [remaining (consume-remaining lexbuf)]
-                  (conj acc {:type :top-level-error
-                             :codepoints remaining})))))))
+          (lex/matches? lexbuf \{) (recur (conj acc (parse expression lexbuf)))
+          
+          (try-match (plus literals) lexbuf)
+          (let [lit-expr {:type :literals
+                          :codepoints (lex/consume-all lexbuf)}]
+            (recur (conj acc lit-expr)))
+          
+          :else
+          (conj acc {:type :top-level-error
+                     :codepoints (lex/consume-to-end lexbuf)}))))))

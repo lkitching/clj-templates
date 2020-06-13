@@ -20,7 +20,7 @@
   [cp]
   (mapcat pct-encode (util/codepoint->utf8 cp)))
 
-(def allow-parsers {:u p/unreserved :r p/reserved})
+(def allow-matchers {:u p/unreserved :r p/reserved})
 
 (def operators
   {nil {:first "" :sep "," :named false :ifemp "" :allow #{:u}}
@@ -37,46 +37,39 @@
 (defmethod expand :literals [_bindings {:keys [codepoints]}]  
   codepoints)
 
+(defn- encode
+  "Encodes all the codepoints in the given buffer according to the
+  matcher for items that do not require encoding and can be included
+  in the output directly. All non-matching codepoints are
+  percent-encoded in the output. Returns a sequence of the encoded
+  codepoints."
+  [lexbuf allow-matcher]
+  (loop [acc []]
+    (cond
+      (lex/end? lexbuf)
+      acc
+        
+      (p/try-match (p/plus allow-matcher) lexbuf)
+      (recur (into acc (lex/consume-all lexbuf)))
+
+      :else
+      (recur (into acc (pct-encode-codepoint (lex/consume lexbuf)))))))
+
 (defn- encode-literal [s]
-  (let [lexbuf (lex/from-string s)]
-    (loop [acc []]
-      (if (lex/end? lexbuf)
-        acc
-        (cond
-          ;;codepoint is in reservered / unreserved
-          (or (p/can-start? p/unreserved lexbuf) (p/can-start? p/reserved lexbuf))
-          (recur (conj acc (lex/advance lexbuf)))
-
-          ;;see if start of percent-encoded triple
-          (p/can-start? p/pct-encoded lexbuf)
-          (if-let [pct (p/try-parse p/pct-encoded lexbuf)]
-            (recur (into acc pct))
-            (let [cp (lex/advance lexbuf)]
-              (recur (into acc (pct-encode-codepoint cp)))))           
-
-          :else
-          (recur (into acc (pct-encode-codepoint (lex/advance lexbuf)))))))))
+  (let [lexbuf (lex/from-string s)
+        m (p/one-of p/unreserved p/reserved p/pct-encoded)]
+    (encode lexbuf m)))
 
 (defn- encode-varname [var-name]
   (encode-literal var-name))
 
-(defn- allow->parser [allow]
-  (apply p/one-of (map allow-parsers allow)))
+(defn- allow->matcher [allow]
+  (apply p/one-of (map allow-matchers allow)))
 
-;;TODO: refactor!
 (defn- encode-codepoints [codepoints allow]
-  (let [ap (allow->parser allow)
+  (let [am (allow->matcher allow)
         lexbuf (lex/create (int-array codepoints))]
-    (loop [acc []]
-      (cond
-        (lex/end? lexbuf)
-        acc
-        
-        (p/can-start? ap lexbuf)
-        (recur (conj acc (lex/advance lexbuf)))
-
-        :else
-        (recur (into acc (pct-encode-codepoint (lex/advance lexbuf))))))))
+    (encode lexbuf am)))
 
 (defn- encode-string [s prefix allow]
   (let [codepoints (util/string->codepoints s)        
